@@ -49,25 +49,54 @@ jobs:
         uses: appleboy/ssh-action@v0.1.10
         with:
           host: ${{ secrets.EC2_HOST }}
-          username: root                      # Run as root since repo is in /var/www
+          username: ec2-user           # SSH as ec2-user
           key: ${{ secrets.EC2_SSH_KEY }}
           port: 22
           debug: true
           script: |
-            cd /var/www/helloapp/python-github-actions-demo || git clone https://github.com/ABYUF/python-github-actions-demo.git /var/www/helloapp/python-github-actions-demo
-            cd /var/www/helloapp/python-github-actions-demo
+            REPO_PATH=/var/www/helloapp/python-github-actions-demo
+            VENV_PATH=/home/ec2-user/myvenv
+            SERVICE_NAME=helloapp.service
+
+            # Clone or pull repo (create folder if needed)
+            if [ ! -d $REPO_PATH ]; then
+              sudo mkdir -p /var/www/helloapp
+              sudo chown ec2-user:ec2-user /var/www/helloapp
+              git clone https://github.com/ABYUF/python-github-actions-demo.git $REPO_PATH
+            fi
+            cd $REPO_PATH
             git pull origin main
 
             # Create virtual environment if it doesn't exist
-            if [ ! -d ~/myvenv ]; then
-              python3 -m venv ~/myvenv
+            if [ ! -d $VENV_PATH ]; then
+              python3 -m venv $VENV_PATH
             fi
 
-            source ~/myvenv/bin/activate
+            source $VENV_PATH/bin/activate
             pip install --upgrade pip
             pip install -r requirements.txt
 
+            # Create systemd service if it doesn't exist
+            if [ ! -f /etc/systemd/system/$SERVICE_NAME ]; then
+              echo "[Unit]
+Description=Gunicorn instance to serve helloapp
+After=network.target
+
+[Service]
+User=ec2-user
+Group=ec2-user
+WorkingDirectory=$REPO_PATH
+Environment=\"PATH=$VENV_PATH/bin\"
+ExecStart=$VENV_PATH/bin/gunicorn -w 4 -b 0.0.0.0:80 src.app:app
+
+[Install]
+WantedBy=multi-user.target" | sudo tee /etc/systemd/system/$SERVICE_NAME
+
+              sudo systemctl daemon-reload
+              sudo systemctl enable $SERVICE_NAME
+            fi
+
             # Restart systemd service
-            systemctl restart helloapp.service
-            echo "===== Last 20 lines of helloapp.service logs ====="
-            journalctl -u helloapp.service -n 20 --no-pager
+            sudo systemctl restart $SERVICE_NAME
+            echo "===== Last 20 lines of $SERVICE_NAME logs ====="
+            sudo journalctl -u $SERVICE_NAME -n 20 --no-pager
